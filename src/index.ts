@@ -2,6 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { execFile } from "node:child_process";
 import { z } from "zod";
 
 const SERPER_API_URL = "https://google.serper.dev";
@@ -379,6 +380,162 @@ server.registerTool("design_search_styles", {
           snippet: r.snippet,
         })),
       },
+    };
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: error instanceof Error ? error.message : `Error: ${String(error)}`,
+        },
+      ],
+    };
+  }
+});
+
+// --- design_extract_tokens tool ---
+
+interface DesignTokens {
+  colors?: Record<string, unknown>;
+  typography?: Record<string, unknown>;
+  spacing?: Record<string, unknown>;
+  borders?: Record<string, unknown>;
+  shadows?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+function runDembrandt(url: string, flags: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const args = [url, "--json-only", ...flags];
+    execFile("dembrandt", args, { timeout: 60_000, maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const msg = stderr?.trim() || error.message;
+        if (error.killed) return reject(new Error("Timed out after 60s. The site may be too slow — try with --slow via CLI."));
+        if (msg.includes("net::ERR_NAME_NOT_RESOLVED")) return reject(new Error(`Could not resolve URL: ${url}`));
+        if (msg.includes("net::ERR_CONNECTION_REFUSED")) return reject(new Error(`Connection refused: ${url}`));
+        return reject(new Error(`dembrandt failed: ${msg}`));
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+function formatTokens(tokens: DesignTokens, url: string): string {
+  const lines = [`# Design Tokens: ${url}`, ""];
+
+  if (tokens.colors && Object.keys(tokens.colors).length) {
+    lines.push("## Colors", "");
+    for (const [name, value] of Object.entries(tokens.colors)) {
+      if (typeof value === "string") {
+        lines.push(`- **${name}**: \`${value}\``);
+      } else if (typeof value === "object" && value !== null) {
+        lines.push(`- **${name}**: \`${JSON.stringify(value)}\``);
+      }
+    }
+    lines.push("");
+  }
+
+  if (tokens.typography && Object.keys(tokens.typography).length) {
+    lines.push("## Typography", "");
+    for (const [name, value] of Object.entries(tokens.typography)) {
+      if (typeof value === "string") {
+        lines.push(`- **${name}**: \`${value}\``);
+      } else if (typeof value === "object" && value !== null) {
+        lines.push(`- **${name}**: \`${JSON.stringify(value)}\``);
+      }
+    }
+    lines.push("");
+  }
+
+  if (tokens.spacing && Object.keys(tokens.spacing).length) {
+    lines.push("## Spacing", "");
+    for (const [name, value] of Object.entries(tokens.spacing)) {
+      lines.push(`- **${name}**: \`${JSON.stringify(value)}\``);
+    }
+    lines.push("");
+  }
+
+  if (tokens.borders && Object.keys(tokens.borders).length) {
+    lines.push("## Borders", "");
+    for (const [name, value] of Object.entries(tokens.borders)) {
+      lines.push(`- **${name}**: \`${JSON.stringify(value)}\``);
+    }
+    lines.push("");
+  }
+
+  if (tokens.shadows && Object.keys(tokens.shadows).length) {
+    lines.push("## Shadows", "");
+    for (const [name, value] of Object.entries(tokens.shadows)) {
+      lines.push(`- **${name}**: \`${JSON.stringify(value)}\``);
+    }
+    lines.push("");
+  }
+
+  // Any remaining top-level keys
+  const handled = new Set(["colors", "typography", "spacing", "borders", "shadows"]);
+  for (const [key, value] of Object.entries(tokens)) {
+    if (handled.has(key) || value === undefined || value === null) continue;
+    lines.push(`## ${key.charAt(0).toUpperCase() + key.slice(1)}`, "");
+    if (typeof value === "object") {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        lines.push(`- **${k}**: \`${typeof v === "string" ? v : JSON.stringify(v)}\``);
+      }
+    } else {
+      lines.push(`- ${JSON.stringify(value)}`);
+    }
+    lines.push("");
+  }
+
+  let result = lines.join("\n");
+  if (result.length > CHARACTER_LIMIT) {
+    result = result.slice(0, CHARACTER_LIMIT) + "\n\n...(truncated)";
+  }
+  return result;
+}
+
+const ExtractTokensInputSchema = z
+  .object({
+    url: z
+      .string()
+      .min(4, "URL is required")
+      .describe('Website URL to extract design tokens from. Examples: "https://stripe.com", "https://linear.app"'),
+    dark_mode: z
+      .boolean()
+      .default(false)
+      .describe("Extract colors from dark mode variant"),
+    mobile: z
+      .boolean()
+      .default(false)
+      .describe("Extract from mobile viewport (375px)"),
+  })
+  .strict();
+
+type ExtractTokensInput = z.infer<typeof ExtractTokensInputSchema>;
+
+server.registerTool("design_extract_tokens", {
+  title: "Extract design tokens from website",
+  description: `Extract actual design tokens (colors, typography, spacing, borders, shadows) from a live website using headless browser. Give it any URL and get back the exact values used. Pairs well with the search tools — find inspiration, then extract tokens from sites you like.`,
+  inputSchema: ExtractTokensInputSchema,
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
+}, async (params: ExtractTokensInput) => {
+  try {
+    const url = params.url.startsWith("http") ? params.url : `https://${params.url}`;
+    const flags: string[] = [];
+    if (params.dark_mode) flags.push("--dark-mode");
+    if (params.mobile) flags.push("--mobile");
+
+    const stdout = await runDembrandt(url, flags);
+    const tokens: DesignTokens = JSON.parse(stdout);
+    const text = formatTokens(tokens, url);
+
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: { url, dark_mode: params.dark_mode, mobile: params.mobile, tokens },
     };
   } catch (error) {
     return {
