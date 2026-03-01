@@ -1,0 +1,45 @@
+{
+  "name": "design-inspiration-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server that searches Dribbble, Behance, Awwwards, Mobbin, and Pinterest for UI design inspiration",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "design-inspiration-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "design",
+    "inspiration",
+    "dribbble",
+    "behance",
+    "awwwards",
+    "ui",
+    "ux"
+  ],
+  "author": "Yonas Valentin",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.8.3"
+  }
+}
